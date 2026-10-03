@@ -88,10 +88,16 @@
     mode: "0644"
   register: wg_easy_docker_repo
 
+- name: Drop the legacy one-line Docker repo file (this role uses deb822)
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/docker.list
+    state: absent
+  register: wg_easy_legacy_repo
+
 - name: Refresh the apt cache (new repository)
   ansible.builtin.apt:
     update_cache: true
-  when: wg_easy_docker_repo.changed
+  when: wg_easy_docker_repo.changed or wg_easy_legacy_repo.changed
 
 - name: Gather the installed packages
   ansible.builtin.package_facts:
