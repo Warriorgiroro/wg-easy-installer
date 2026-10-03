@@ -1,0 +1,33 @@
+# Managed by Ansible (role wg_easy) — do not edit by hand, re-run the playbook.
+{% if wg_easy_tls == 'internal' %}
+{
+	# Local CA — clients must trust it (lab / private DNS only).
+	local_certs
+	# A client that dials a bare IP sends NO SNI, so Caddy cannot pick a
+	# certificate and aborts the handshake with "tlsv1 alert internal error".
+	# default_sni gives those clients a certificate. The https:// prefix on the
+	# site block below is REQUIRED: without it Caddy skips the global TLS
+	# options entirely (caddyserver/caddy#7325).
+	default_sni {{ wg_easy_domain }}
+}
+
+http://{{ wg_easy_domain }} {
+	redir https://{host}{uri} permanent
+}
+
+https://{{ wg_easy_domain }} {
+	encode zstd gzip
+	log
+	reverse_proxy wg-easy:80
+}
+{% else %}
+{
+	email {{ wg_easy_acme_email | default('admin@' ~ wg_easy_domain, true) }}
+}
+
+{{ wg_easy_domain }} {
+	encode zstd gzip
+	log
+	reverse_proxy wg-easy:80
+}
+{% endif %}

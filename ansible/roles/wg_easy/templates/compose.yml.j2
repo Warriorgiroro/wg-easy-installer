@@ -1,0 +1,70 @@
+# Managed by Ansible (role wg_easy) — do not edit by hand, re-run the playbook.
+name: wg-easy
+
+services:
+  # WireGuard + web UI. No host port for the UI: only Caddy talks to it.
+  wg-easy:
+    image: ${WGE_IMAGE}
+    container_name: wg-easy
+    hostname: wg-easy
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+    environment:
+      # Listen on 80 inside the container; Caddy terminates TLS and proxies here.
+      PORT: "80"
+      HOST: "0.0.0.0"
+      DISABLE_IPV6: "true"
+      # Trust Caddy's X-Forwarded-* headers (whole docker subnet).
+      TRUSTED_PROXIES: "${WG_SUBNET}"
+      # Non-interactive first-run setup (only honoured on the very first start).
+      INIT_ENABLED: "true"
+      INIT_USERNAME: "${WG_ADMIN_USER}"
+      INIT_PASSWORD: "${WG_ADMIN_PASSWORD}"
+      INIT_HOST: "${WG_HOST}"
+      INIT_PORT: "${WG_PORT}"
+      INIT_DNS: "${WG_DNS}"
+    volumes:
+      - wg-easy-data:/etc/wireguard
+      - /lib/modules:/lib/modules:ro
+    ports:
+      # WireGuard: container always listens on 51820/udp, published as ${WG_PORT}.
+      - "${WG_PORT}:51820/udp"
+    networks:
+      - wgnet
+
+  # TLS front door for the web UI.
+  caddy:
+    image: ${CADDY_IMAGE}
+    container_name: wg-caddy
+    hostname: caddy
+    restart: unless-stopped
+    depends_on:
+      - wg-easy
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - wgnet
+
+networks:
+  wgnet:
+    name: wgnet
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "${WG_SUBNET}"
+
+volumes:
+  wg-easy-data:
+  caddy-data:
+  caddy-config:

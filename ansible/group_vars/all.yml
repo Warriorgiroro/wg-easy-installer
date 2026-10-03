@@ -1,0 +1,47 @@
+---
+# Everything the playbook needs to know. Override per host in the inventory,
+# or on the command line:  ansible-playbook site.yml -e wg_easy_port=50000
+
+# ------------------------------------------------------------------ UI / TLS
+# FQDN shown in the browser. May be a bare IP (e.g. 203.0.113.10) — the role
+# then switches Caddy to its internal CA and adds the no-SNI workaround.
+# Required.
+wg_easy_domain: ""
+
+# letsencrypt -> public cert, needs DNS + inbound tcp/80 + tcp/443
+# internal    -> Caddy's own CA, no DNS needed, clients must trust the CA
+wg_easy_tls: letsencrypt
+
+# Defaults to admin@<domain>; only used by the ACME account.
+wg_easy_acme_email: ""
+
+# -------------------------------------------------------------- WireGuard
+# Endpoint advertised to clients (defaults to the domain).
+wg_easy_host: ""
+# Public UDP port.
+wg_easy_port: 51820
+# DNS pushed to clients.
+wg_easy_dns: "1.1.1.1,8.8.8.8"
+# Internal docker subnet — also used as TRUSTED_PROXIES.
+wg_easy_subnet: "10.89.89.0/24"
+
+# ------------------------------------------------------- admin (first run)
+wg_easy_admin_user: admin
+# Leave empty to generate one once and keep it in <wg_easy_dir>/.admin_password.
+# wg-easy only honours INIT_* on its very first start, so changing this later
+# has no effect on an existing install (change it in the UI instead).
+wg_easy_admin_password: ""
+
+# ----------------------------------------------------------------- images
+wg_easy_image: "ghcr.io/wg-easy/wg-easy:15"
+wg_easy_caddy_image: "caddy:2.10-alpine"
+
+# --------------------------------------------------------------- behaviour
+# Open the required ports when ufw is already active.
+wg_easy_manage_ufw: true
+# Extra users to add to the docker group (the connecting user is added too).
+wg_easy_docker_users: []
+# Continue even when the preflight checks fail.
+wg_easy_force: false
+# Allow non-Ubuntu/Debian targets (best effort).
+wg_easy_skip_os_check: false

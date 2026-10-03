@@ -1,0 +1,25 @@
+wg-easy + Caddy, deployed by Ansible (role wg_easy)
+
+  Web UI        https://{{ wg_easy_domain }}
+  Admin user    {{ wg_easy_admin_user }}
+  Admin pass    {{ wg_easy_admin_password_final }}
+
+  VPN endpoint  {{ wg_easy_host_final }}:{{ wg_easy_port }}/udp   (add clients in the UI)
+  Client DNS    {{ wg_easy_dns }}
+  Config dir    {{ wg_easy_dir }}
+
+  Files         .env, compose.yml, Caddyfile (this file is chmod 600)
+
+Common commands (run inside {{ wg_easy_dir }}):
+
+  docker compose ps
+  docker compose logs -f wg-easy
+  docker compose logs -f caddy
+  docker compose pull && docker compose up -d     # update images
+  docker compose down                             # stop (keeps volumes)
+
+After the first successful login the INIT_* variables in .env are no longer
+needed (wg-easy ignores them once setup is done) - delete the password there to
+stop keeping the plaintext on disk:
+
+  sed -i '/^WG_ADMIN_PASSWORD=/d' .env

@@ -1,0 +1,3 @@
+# real inventories are local — never commit hosts/keys
+inventory.ini
+*.retry

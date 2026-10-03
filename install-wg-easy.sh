@@ -393,9 +393,19 @@ YAML
 {
 	# Local CA — clients must trust it (lab / private DNS only).
 	local_certs
+	# A client that dials a bare IP sends NO SNI, so Caddy cannot pick a
+	# certificate and aborts the handshake with "tlsv1 alert internal error".
+	# default_sni gives those clients a certificate. The https:// prefix on the
+	# site block below is REQUIRED: without it Caddy skips the global TLS
+	# options entirely (caddyserver/caddy#7325).
+	default_sni ${WG_DOMAIN}
 }
 
-${WG_DOMAIN} {
+http://${WG_DOMAIN} {
+	redir https://{host}{uri} permanent
+}
+
+https://${WG_DOMAIN} {
 	encode zstd gzip
 	log
 	reverse_proxy wg-easy:80

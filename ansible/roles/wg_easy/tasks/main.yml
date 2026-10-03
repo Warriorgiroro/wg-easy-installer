@@ -1,0 +1,325 @@
+---
+# wg-easy (WireGuard + web UI) behind Caddy.
+# Idempotent: re-running converges the stack and keeps the existing admin
+# password and WireGuard state (both live in docker volumes / .env).
+
+- name: Validate the inputs
+  ansible.builtin.assert:
+    that: wg_easy_domain | length > 0
+    fail_msg: >-
+      wg_easy_domain is required — an FQDN (vpn.example.com) or a bare IP
+      (203.0.113.10). Set it in group_vars/all.yml or pass
+      -e wg_easy_domain=...
+    success_msg: "Deploying the UI for {{ wg_easy_domain }} ({{ wg_easy_tls }})"
+
+- name: Validate wg_easy_tls
+  ansible.builtin.assert:
+    that: wg_easy_tls in ['letsencrypt', 'internal']
+    fail_msg: "wg_easy_tls must be 'letsencrypt' or 'internal'"
+
+- name: Validate wg_easy_port
+  ansible.builtin.assert:
+    that:
+      - wg_easy_port | string is match('^[0-9]+$')
+      - wg_easy_port | int >= 1
+      - wg_easy_port | int <= 65535
+    fail_msg: "wg_easy_port must be a number in 1..65535"
+
+- name: Resolve derived values
+  ansible.builtin.set_fact:
+    wg_easy_host_final: "{{ wg_easy_host | default('', true) | length > 0 | ternary(wg_easy_host, wg_easy_domain) }}"
+    wg_easy_acme_email_final: "{{ wg_easy_acme_email | default('', true) | length > 0 | ternary(wg_easy_acme_email, 'admin@' ~ wg_easy_domain) }}"
+    wg_easy_deb_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armhf'}.get(ansible_facts.architecture, ansible_facts.architecture) }}"
+
+- name: Check that this is a supported host
+  when: not wg_easy_skip_os_check | bool
+  block:
+    - name: Assert a Debian-family, systemd host
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.os_family == 'Debian'
+          - ansible_facts.service_mgr | default('') == 'systemd'
+        fail_msg: >-
+          This role targets Debian/Ubuntu with systemd (found
+          {{ ansible_facts.os_family }} / {{ ansible_facts.service_mgr | default('unknown') }}).
+          Set wg_easy_skip_os_check=true to try anyway.
+
+# --------------------------------------------------------------- docker ------
+
+- name: Install the apt prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create /etc/apt/keyrings
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Docker's signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+
+- name: Add the official Docker apt repository (deb822)
+  ansible.builtin.copy:
+    content: |
+      Types: deb
+      URIs: https://download.docker.com/linux/ubuntu
+      Suites: {{ ansible_facts.distribution_release }}
+      Components: stable
+      Architectures: {{ wg_easy_deb_arch }}
+      Signed-By: /etc/apt/keyrings/docker.asc
+    dest: /etc/apt/sources.list.d/docker.sources
+    owner: root
+    group: root
+    mode: "0644"
+  register: wg_easy_docker_repo
+
+- name: Refresh the apt cache (new repository)
+  ansible.builtin.apt:
+    update_cache: true
+  when: wg_easy_docker_repo.changed
+
+- name: Gather the installed packages
+  ansible.builtin.package_facts:
+    manager: auto
+  when: ansible_facts.packages is not defined
+
+- name: Drop packages that conflict with docker-ce
+  ansible.builtin.apt:
+    name: "{{ wg_easy_conflicts }}"
+    state: absent
+    autoremove: false
+  vars:
+    wg_easy_conflicts: >-
+      {{ ['docker.io', 'docker-doc', 'docker-compose', 'docker-compose-v2',
+          'podman-docker', 'containerd', 'runc']
+         | select('in', ansible_facts.packages) | list }}
+  when: wg_easy_conflicts | length > 0
+
+- name: Install Docker Engine and the Compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+  register: wg_easy_docker_install
+
+- name: Enable and start Docker
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - docker
+    - containerd
+  register: wg_easy_services
+  failed_when: false
+  changed_when: wg_easy_services.state is defined and wg_easy_services.state != 'started'
+
+- name: Work out which login user should join the docker group
+  ansible.builtin.set_fact:
+    wg_easy_group_users: >-
+      {{ ((([ansible_user] if (ansible_user | default('root')) != 'root' else [])
+           + (wg_easy_docker_users | default([]))) | unique) }}
+
+- name: Add the login user(s) to the docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ wg_easy_group_users }}"
+  when: wg_easy_group_users | length > 0
+
+# ------------------------------------------------------------- preflight -----
+
+- name: Preflight — are the web ports free (or already ours)?
+  ansible.builtin.shell:
+    cmd: >-
+      if [ -n "$(docker ps --filter name=wg-caddy --quiet 2>/dev/null)" ]; then
+        echo ours;
+      else
+        ss -Hltn 'sport = :80 or sport = :443' | wc -l;
+      fi
+    executable: /bin/bash
+  register: wg_easy_portcheck
+  changed_when: false
+  failed_when: false
+
+- name: Preflight — stop when something else owns tcp/80 or tcp/443
+  ansible.builtin.assert:
+    that: wg_easy_portcheck.stdout | trim is match('^(ours|0)$')
+    fail_msg: >-
+      tcp/80 and/or tcp/443 are already in use on this host (nginx? apache?
+      another VPN?). Free them, or set wg_easy_force=true to continue.
+    success_msg: "Web ports are available ({{ wg_easy_portcheck.stdout | trim }})"
+  when: not wg_easy_force | bool
+
+- name: Preflight — warn about DNS when using Let's Encrypt
+  ansible.builtin.debug:
+    msg: >-
+      ACME needs {{ wg_easy_domain }} to resolve to this host and inbound
+      tcp/80 + tcp/443 to be reachable from the internet.
+  when: wg_easy_tls == 'letsencrypt'
+
+- name: Preflight — warn about the internal CA
+  ansible.builtin.debug:
+    msg: >-
+      wg_easy_tls=internal: Caddy serves its own CA. Browsers will warn until
+      you trust it; clients that dial a bare IP send no SNI, which the
+      generated Caddyfile handles via default_sni.
+  when: wg_easy_tls == 'internal'
+
+# --------------------------------------------------------------- configs -----
+
+- name: Create the install directory
+  ansible.builtin.file:
+    path: "{{ wg_easy_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Generate the admin password once (kept on the target)
+  ansible.builtin.copy:
+    content: "{{ lookup('password', '/dev/null length=24 chars=hexdigits') }}\n"
+    dest: "{{ wg_easy_dir }}/.admin_password"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+  register: wg_easy_pw_file
+
+- name: Read the stored admin password
+  ansible.builtin.slurp:
+    src: "{{ wg_easy_dir }}/.admin_password"
+  register: wg_easy_pw_raw
+
+- name: Pick the password (explicit > stored > generated)
+  ansible.builtin.set_fact:
+    wg_easy_admin_password_final: >-
+      {{ wg_easy_admin_password | length > 0
+         | ternary(wg_easy_admin_password, wg_easy_pw_raw.content | b64decode | trim) }}
+
+- name: Write .env
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ wg_easy_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Write compose.yml
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ wg_easy_dir }}/compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Write the Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ wg_easy_dir }}/Caddyfile"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Write the operator note (README.txt)
+  ansible.builtin.template:
+    src: README.txt.j2
+    dest: "{{ wg_easy_dir }}/README.txt"
+    owner: root
+    group: root
+    mode: "0600"
+
+# -------------------------------------------------------------- firewall -----
+
+- name: Is ufw active?
+  ansible.builtin.command: ufw status
+  register: wg_easy_ufw_status
+  changed_when: false
+  failed_when: false
+  when: wg_easy_manage_ufw | bool
+
+- name: Open the required ports in ufw
+  ansible.builtin.command: "ufw allow {{ item }}"
+  loop:
+    - 80/tcp
+    - 443/tcp
+    - 443/udp
+    - "{{ wg_easy_port }}/udp"
+  when:
+    - wg_easy_manage_ufw | bool
+    - "'Status: active' in (wg_easy_ufw_status.stdout | default(''))"
+  changed_when: false
+
+# ---------------------------------------------------------------- deploy -----
+
+- name: Start (or converge) the stack
+  ansible.builtin.command:
+    cmd: "docker compose --env-file {{ wg_easy_dir }}/.env up -d"
+    chdir: "{{ wg_easy_dir }}"
+  register: wg_easy_up
+  changed_when: >-
+    ['Started', 'Created', 'Recreated'] | select('in', wg_easy_up.stdout ~ wg_easy_up.stderr) | list | length > 0
+
+- name: Wait for the web UI to answer through Caddy
+  ansible.builtin.command:
+    cmd: >-
+      curl -k -sS -o /dev/null -w '%{http_code}' --max-time 5
+      --resolve {{ wg_easy_domain }}:443:127.0.0.1 https://{{ wg_easy_domain }}/
+  register: wg_easy_probe
+  until: wg_easy_probe.stdout in ['200', '301', '302', '307', '308']
+  retries: "{{ wg_easy_wait_retries }}"
+  delay: "{{ wg_easy_wait_delay }}"
+  changed_when: false
+  failed_when: false
+
+- name: Show the container state
+  ansible.builtin.command:
+    cmd: "docker compose --env-file {{ wg_easy_dir }}/.env ps"
+    chdir: "{{ wg_easy_dir }}"
+  register: wg_easy_ps
+  changed_when: false
+  failed_when: false
+
+- name: Print the container state
+  ansible.builtin.debug:
+    msg: "{{ wg_easy_ps.stdout_lines | default([]) }}"
+
+- name: Warn when the UI did not answer yet
+  ansible.builtin.debug:
+    msg: >-
+      The UI has not answered yet (last HTTP code: {{ wg_easy_probe.stdout | default('none') }}).
+      Right after a fresh start this is normal for 30-90s while Caddy asks for
+      the certificate. Check: docker compose -f {{ wg_easy_dir }}/compose.yml logs --tail=50 caddy
+  when: wg_easy_probe.stdout not in ['200', '301', '302', '307', '308']
+
+- name: Summary
+  ansible.builtin.debug:
+    msg:
+      - "Web UI        https://{{ wg_easy_domain }}"
+      - "Admin user    {{ wg_easy_admin_user }}"
+      - "Admin pass    {{ wg_easy_admin_password_final }}"
+      - "VPN endpoint  {{ wg_easy_host_final }}:{{ wg_easy_port }}/udp"
+      - "Client DNS    {{ wg_easy_dns }}"
+      - "Config dir    {{ wg_easy_dir }}"
+      - "Reminder      open inbound tcp/443 + udp/{{ wg_easy_port }} in the cloud firewall"
+      - "Reminder      delete WG_ADMIN_PASSWORD from .env after the first login"

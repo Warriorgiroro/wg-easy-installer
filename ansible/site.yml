@@ -1,0 +1,18 @@
+---
+# wg-easy (WireGuard + web UI) behind Caddy — the Ansible way.
+#
+# Same result as install-wg-easy.sh, but declarative and repeatable:
+#
+#   ansible-playbook site.yml                      # apply
+#   ansible-playbook site.yml --check --diff        # dry run
+#   ansible-playbook site.yml -e wg_easy_port=50000 # override anything
+#
+# Configure everything in group_vars/all.yml (or -e / --extra-vars).
+
+- name: Deploy wg-easy behind Caddy
+  hosts: wg_easy
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: wg_easy

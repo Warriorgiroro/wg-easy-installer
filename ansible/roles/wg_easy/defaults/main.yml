@@ -1,0 +1,46 @@
+---
+# Defaults — override in group_vars/all.yml, host_vars, or with -e.
+# See group_vars/all.yml for the documented list (kept there so the variables
+# sit next to the inventory people actually edit).
+
+# Install directory: holds .env, compose.yml, Caddyfile, README.txt
+wg_easy_dir: /opt/wg-easy
+
+# UI FQDN or bare IP (required — validated in tasks/main.yml)
+wg_easy_domain: ""
+
+# letsencrypt | internal
+wg_easy_tls: letsencrypt
+
+# ACME contact; defaults to admin@<domain>
+wg_easy_acme_email: ""
+
+# Endpoint clients dial; defaults to wg_easy_domain
+wg_easy_host: ""
+
+# Public WireGuard UDP port
+wg_easy_port: 51820
+
+# DNS pushed to VPN clients
+wg_easy_dns: "1.1.1.1,8.8.8.8"
+
+# Internal docker subnet (also TRUSTED_PROXIES)
+wg_easy_subnet: "10.89.89.0/24"
+
+# Web UI admin (only honoured by wg-easy on its very first start)
+wg_easy_admin_user: admin
+wg_easy_admin_password: ""
+
+# Images
+wg_easy_image: "ghcr.io/wg-easy/wg-easy:15"
+wg_easy_caddy_image: "caddy:2.10-alpine"
+
+# Behaviour
+wg_easy_manage_ufw: true
+wg_easy_docker_users: []
+wg_easy_force: false
+wg_easy_skip_os_check: false
+
+# Time to wait for the UI after `compose up` (ceil(wait_retries * wait_delay))
+wg_easy_wait_retries: 15
+wg_easy_wait_delay: 4
