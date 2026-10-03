@@ -73,21 +73,29 @@ No collections required (**ansible-core only**).
 
 ```bash
 cd ansible
-cp inventory.example.ini inventory.ini      # set ansible_host / ansible_user
-$EDITOR inventory.ini group_vars/all.yml    # FQDN or IP, ports, TLS mode
+cp inventory.example.ini inventory.ini          # ansible_host + ansible_user
+$EDITOR inventory.ini                           # [wg_easy:vars] = domain/IP, port, TLS
 
-ansible-playbook site.yml                   # apply
-ansible-playbook site.yml --check --diff    # dry run
+ansible-playbook site.yml                       # apply
+ansible-playbook site.yml --check --diff        # dry run
 ansible-playbook site.yml -e wg_easy_port=50000 -e wg_easy_tls=internal
 ```
 
-Example for a bare-IP install with a non-default WireGuard port:
+`group_vars/all.yml` ships as a **commented template** on purpose: a live value
+there would outrank your inventory and silently override it (Ansible precedence:
+`role defaults < inventory vars < group_vars < -e`). Put real values in the
+inventory, in a new `group_vars/all.yml` of your own, or pass `-e`.
 
-```yaml
-# group_vars/all.yml
-wg_easy_domain: 203.0.113.10   # the IP clients use
-wg_easy_tls: internal          # no domain -> Caddy issues its own cert
-wg_easy_port: 50000            # udp/50000 for WireGuard
+Example inventory for a bare-IP install with a non-default WireGuard port:
+
+```ini
+[wg_easy]
+vpn1 ansible_host=203.0.113.10 ansible_user=root
+
+[wg_easy:vars]
+wg_easy_domain=203.0.113.10   # the IP clients use
+wg_easy_tls=internal          # no domain -> Caddy issues its own cert
+wg_easy_port=50000            # udp/50000 for WireGuard
 ```
 
 Key variables (full list in `ansible/group_vars/all.yml`):

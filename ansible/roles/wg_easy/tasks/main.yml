@@ -27,9 +27,14 @@
 
 - name: Resolve derived values
   ansible.builtin.set_fact:
-    wg_easy_host_final: "{{ wg_easy_host | default('', true) | length > 0 | ternary(wg_easy_host, wg_easy_domain) }}"
-    wg_easy_acme_email_final: "{{ wg_easy_acme_email | default('', true) | length > 0 | ternary(wg_easy_acme_email, 'admin@' ~ wg_easy_domain) }}"
-    wg_easy_deb_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armhf'}.get(ansible_facts.architecture, ansible_facts.architecture) }}"
+    wg_easy_host_final: >-
+      {{ wg_easy_host if (wg_easy_host | default('', true) | length > 0) else wg_easy_domain }}
+    wg_easy_acme_email_final: >-
+      {{ wg_easy_acme_email if (wg_easy_acme_email | default('', true) | length > 0)
+         else 'admin@' ~ wg_easy_domain }}
+    wg_easy_deb_arch: >-
+      {{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armhf'}
+         .get(ansible_facts.architecture, ansible_facts.architecture) }}
 
 - name: Check that this is a supported host
   when: not wg_easy_skip_os_check | bool
@@ -220,8 +225,8 @@
 - name: Pick the password (explicit > stored > generated)
   ansible.builtin.set_fact:
     wg_easy_admin_password_final: >-
-      {{ wg_easy_admin_password | length > 0
-         | ternary(wg_easy_admin_password, wg_easy_pw_raw.content | b64decode | trim) }}
+      {{ wg_easy_admin_password if (wg_easy_admin_password | length > 0)
+         else (wg_easy_pw_raw.content | b64decode | trim) }}
 
 - name: Write .env
   ansible.builtin.template:
